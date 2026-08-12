@@ -62,3 +62,27 @@ variable "key_name" {
   type        = string
   default     = ""
 }
+
+variable "db_name" {
+  description = "Postgres database name"
+  type        = string
+  default     = "cloudproj"
+}
+
+variable "db_username" {
+  description = "Postgres master username"
+  type        = string
+  default     = "appuser"
+}
+
+variable "db_instance_class" {
+  description = "RDS instance class — must stay Free Tier eligible"
+  type        = string
+  default     = "db.t3.micro"
+}
+
+variable "db_allocated_storage" {
+  description = "RDS storage in GB — Free Tier covers up to 20GB"
+  type        = number
+  default     = 20
+}
