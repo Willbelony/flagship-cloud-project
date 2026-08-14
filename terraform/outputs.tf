@@ -47,3 +47,8 @@ output "github_actions_role_arn" {
   description = "IAM role ARN GitHub Actions assumes via OIDC — put this in the workflow file"
   value       = aws_iam_role.github_actions_deploy.arn
 }
+
+output "cloudwatch_dashboard_url" {
+  description = "Direct link to the CloudWatch dashboard"
+  value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards:name=${aws_cloudwatch_dashboard.main.dashboard_name}"
+}
