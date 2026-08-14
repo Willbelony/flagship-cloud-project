@@ -32,3 +32,8 @@ output "db_param_name" {
   description = "SSM Parameter Store key holding the full DATABASE_URL"
   value       = aws_ssm_parameter.database_url.name
 }
+
+output "alb_dns_name" {
+  description = "ALB's public DNS name — usable immediately, before the domain is wired up"
+  value       = aws_lb.main.dns_name
+}

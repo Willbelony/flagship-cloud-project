@@ -15,11 +15,11 @@ resource "aws_security_group" "app" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "App port from admin IP"
-    from_port   = var.app_port
-    to_port     = var.app_port
-    protocol    = "tcp"
-    cidr_blocks = [var.my_ip]
+    description     = "App port from ALB only"
+    from_port       = var.app_port
+    to_port         = var.app_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
   }
 
   egress {

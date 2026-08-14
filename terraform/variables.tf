@@ -86,3 +86,9 @@ variable "db_allocated_storage" {
   type        = number
   default     = 20
 }
+
+variable "domain_name" {
+  description = "Registered domain for the app (e.g. willardbelony.com). Leave empty until domain registration completes — HTTPS/ACM/Route53 resources only get created once this is set."
+  type        = string
+  default     = ""
+}
