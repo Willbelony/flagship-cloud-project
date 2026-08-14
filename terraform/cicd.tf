@@ -50,6 +50,18 @@ variable "github_repo" {
   default     = "Willbelony/flagship-cloud-project"
 }
 
+variable "github_owner_id" {
+  description = "GitHub numeric owner (org/user) ID — required since GitHub's July 2026 immutable OIDC subject claim format embeds this. Find via: curl https://api.github.com/users/Willbelony"
+  type        = string
+  default     = "145634720"
+}
+
+variable "github_repo_id" {
+  description = "GitHub numeric repo ID — required for the same reason. Find via: curl https://api.github.com/repos/Willbelony/flagship-cloud-project"
+  type        = string
+  default     = "1332385232"
+}
+
 data "aws_iam_policy_document" "github_actions_assume_role" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -65,12 +77,14 @@ data "aws_iam_policy_document" "github_actions_assume_role" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Restrict to this exact repo, any branch — tighten to :ref:refs/heads/main
-    # if you want to block deploys from feature branches later
+    # Matches GitHub's immutable OIDC subject claim format (rolled out July 2026):
+    # repo:OWNER@OWNER_ID/REPO@REPO_ID:ref:refs/heads/BRANCH
+    # Restricted to any branch — tighten to :ref:refs/heads/main if you want to
+    # block deploys from feature branches later
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:*"]
+      values   = ["repo:${split("/", var.github_repo)[0]}@${var.github_owner_id}/${split("/", var.github_repo)[1]}@${var.github_repo_id}:*"]
     }
   }
 }
