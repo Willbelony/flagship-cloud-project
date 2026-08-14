@@ -1,88 +1,87 @@
-# Flagship Cloud Project — Build Log
+# Flagship Cloud Project
 
-Phase 1: cost safety rails + networking foundation (VPC).
+A production-shaped deployment of a small FastAPI task-tracker service — built to demonstrate real
+AWS infrastructure, not a tutorial checklist. Live at **https://willardbelony.com**
 
-## Step 0 — One-time remote state backend (do this before `terraform init`)
+## Architecture
 
-Terraform needs somewhere to store its state file. We use S3 + DynamoDB for locking,
-created manually via CLI since Terraform can't create the bucket it's about to store
-its own state in.
-
-```bash
-# S3 bucket for state (bucket names are globally unique — change if taken)
-aws s3api create-bucket \
-  --bucket willbelony-cloud-project-tfstate \
-  --region us-east-1
-
-aws s3api put-bucket-versioning \
-  --bucket willbelony-cloud-project-tfstate \
-  --versioning-configuration Status=Enabled
-
-aws s3api put-bucket-encryption \
-  --bucket willbelony-cloud-project-tfstate \
-  --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-
-# DynamoDB table for state locking (prevents two applies running at once)
-aws dynamodb create-table \
-  --table-name terraform-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region us-east-1
+```
+Internet
+   │
+   ▼
+Route 53 (willardbelony.com)
+   │
+   ▼
+Application Load Balancer  ──── ACM (TLS cert, HTTP→HTTPS redirect)
+   │  (public subnets)
+   ▼
+EC2 (t3.micro, Docker)  ──────── CloudWatch alarms + dashboard
+   │  (public subnet, SG: ALB-only)         │
+   ▼                                         ▼
+RDS Postgres (private subnets, SG: app-only)  SNS → email
 ```
 
-Both are free at this scale (a few KB of state, on-demand DynamoDB with near-zero requests).
+**CI/CD:** GitHub Actions → OIDC-federated AWS role (no stored credentials) → builds/pushes
+Docker image to ECR → SSM Run Command redeploys on EC2 → health check confirms.
 
-## Step 1 — Init and apply the networking layer
+## Why these choices
+
+- **EC2 over Fargate/Lambda** — deliberately chosen for hands-on Linux administration reps
+  (systemd, Docker daemon, SSM agent) rather than abstracting the OS away.
+- **No NAT Gateway** — the one AWS networking component with a real ongoing cost (~$32/mo).
+  Private subnets only host RDS, which doesn't need outbound internet.
+- **SSM Session Manager instead of SSH** — zero open inbound ports for shell access, IAM-governed,
+  fully audited in CloudTrail.
+- **Security groups over IP allowlisting** — app trusts only the ALB's security group, DB trusts
+  only the app's. No IP address anywhere in the trust chain (this was a real bug I hit and fixed —
+  see below).
+- **GitHub OIDC over stored AWS keys** — GitHub proves its identity per-run via a short-lived
+  token; no long-lived credential sits in a GitHub secret waiting to leak.
+
+## Real problems hit and fixed (not just "it worked first try")
+
+1. **RDS AMI snapshot size mismatch** — Amazon Linux 2023's AMI requires a ≥30GB root volume;
+   Terraform's default 8GB failed with a clear API error. Fixed by matching the snapshot minimum.
+2. **CGNAT/IPv6 broke IP-based security group rules** — my home network doesn't have a stable
+   public IPv4 address, so allowlisting my IP for testing was fragile. Root-caused via `curl -4`
+   vs default `curl`, then eliminated the pattern entirely by moving to an ALB.
+3. **GitHub's July 2026 OIDC "immutable subject claim" rollout** broke the trust policy mid-project
+   — GitHub started embedding numeric owner/repo IDs in the token's `sub` claim for new repos.
+   Diagnosed via raw CloudTrail `AssumeRoleWithWebIdentity` event logs (not guessing), found the
+   exact claim format, updated the Terraform trust policy to match.
+
+## Tech stack
+
+Terraform · AWS (VPC, EC2, RDS, ALB, Route 53, ACM, IAM/OIDC, ECR, SSM, CloudWatch, SNS) · Docker ·
+FastAPI · SQLAlchemy · Postgres · GitHub Actions
+
+## Repo layout
+
+```
+app/            FastAPI app, Dockerfile
+terraform/      All infrastructure as code
+.github/workflows/deploy.yml   CI/CD pipeline
+```
+
+## Running this yourself
 
 ```bash
 cd terraform
 terraform init
-terraform plan     # review what it's about to create — should be: 1 VPC, 1 IGW,
-                    # 4 subnets, 2 route tables, 4 route table associations
-terraform apply     # type "yes" when prompted
+terraform apply -var="domain_name=<your-domain>"
 ```
 
-This creates:
-- 1 VPC (`10.0.0.0/16`)
-- 2 public subnets (one per AZ) — where your EC2 instance and later load balancer live
-- 2 private subnets (one per AZ) — where RDS will live in a later phase
-- 1 Internet Gateway + public route table
-- **No NAT Gateway** — deliberately, since it's the one networking piece with a real
-  monthly cost (~$32) and this project doesn't need private subnets to reach the internet
+Requires: AWS account, registered domain in Route 53, `terraform`, `aws` CLI configured.
 
-## Verify
+## Cost
 
-```bash
-terraform output
-```
+Runs within AWS Free Tier (EC2 t3.micro, RDS db.t3.micro, 20GB storage) for the first 12 months.
+Ongoing cost after Free Tier: roughly $15-25/month (EC2 + RDS instance hours) + ~$16/year domain
+registration. Zero-spend billing alarm configured from day one.
 
-You should see `vpc_id`, `public_subnet_ids` (2), and `private_subnet_ids` (2).
-
-## What this proves (for interviews)
-
-- You understand the difference between public and private subnets and *why* each route
-  table is different, not just that Terraform made them
-- You made a deliberate cost/architecture tradeoff (no NAT) instead of copy-pasting a
-  tutorial's default setup
-- Remote state + locking shows you know Terraform in a team/real-world context, not just
-  `terraform apply` on a laptop with local state
-
-## Next phases (not yet built)
-
-1. **Security groups + EC2 + Docker** — the app itself, SSH-free access via SSM Session Manager
-2. **RDS Postgres** — in the private subnets, security-group-scoped to the app only
-3. **ALB + Route 53 + ACM** — real HTTPS on a real domain
-4. **GitHub Actions CI/CD** — build → push → deploy on merge
-5. **CloudWatch monitoring + alarms**
-6. **IAM least-privilege tightening** — replace your admin user's broad access with
-   scoped roles once everything else works
-
-## Tearing everything down (avoid charges)
+## Teardown
 
 ```bash
 cd terraform
-terraform destroy
+terraform destroy -var="domain_name=<your-domain>"
 ```
-
-Run this anytime you're stepping away from the project for more than a day or two.
