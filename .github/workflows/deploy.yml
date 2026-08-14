@@ -1,0 +1,85 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch: {} # allows manual "Run workflow" button in GitHub UI
+
+permissions:
+  id-token: write   # required for OIDC — this is what lets AWS trust this run without a stored secret
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: cloudproj/task-api
+  INSTANCE_ID: i-0c78fe8168f90d552
+  # Replace with the value of `terraform output github_actions_role_arn`
+  AWS_ROLE_ARN: arn:aws:iam::683091268243:role/cloudproj-github-deploy
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image
+        id: build-image
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd app
+          docker build -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" -t "$REGISTRY/$ECR_REPOSITORY:latest" .
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$REGISTRY/$ECR_REPOSITORY:latest"
+
+      - name: Deploy to EC2 via SSM
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[
+              \"aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY\",
+              \"docker pull $REGISTRY/$ECR_REPOSITORY:latest\",
+              \"DB_URL=\$(aws ssm get-parameter --name /cloudproj/database_url --with-decryption --query Parameter.Value --output text --region $AWS_REGION)\",
+              \"docker stop task-api || true\",
+              \"docker rm task-api || true\",
+              \"docker run -d -p 8000:8000 --name task-api -e DATABASE_URL=\\\"\$DB_URL\\\" $REGISTRY/$ECR_REPOSITORY:latest\"
+            ]" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "Waiting for deployment command $COMMAND_ID to finish..."
+          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" || true
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "Status" --output text)
+
+          echo "Deploy command status: $STATUS"
+          if [ "$STATUS" != "Success" ]; then
+            aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
+            exit 1
+          fi
+
+      - name: Verify deployment
+        run: |
+          sleep 10
+          curl -f https://willardbelony.com/health

@@ -37,3 +37,13 @@ output "alb_dns_name" {
   description = "ALB's public DNS name — usable immediately, before the domain is wired up"
   value       = aws_lb.main.dns_name
 }
+
+output "ecr_repository_url" {
+  description = "ECR repo URL — used by the GitHub Actions workflow to push images"
+  value       = aws_ecr_repository.app.repository_url
+}
+
+output "github_actions_role_arn" {
+  description = "IAM role ARN GitHub Actions assumes via OIDC — put this in the workflow file"
+  value       = aws_iam_role.github_actions_deploy.arn
+}
